@@ -5,3 +5,4 @@ authors = ["Bernd Amend <bernd.amend@gmail.com>"]
 
 [dependencies]
 regex = "*"
+time = "*"
