@@ -15,22 +15,28 @@
   <script src="bower_components/semantic/dist/semantic.min.js"></script>
   <script src="bower_components/dygraphs/dygraph-combined.js"></script>
 
-  <div id="myDiv" style="width: 100%; height: 1000px;"></div>
+  <div id="myDiv" style="width: 100%; height: 600px;"></div>
 
   <script>
-    const sensorid = "28-000003a4a7ff";
+    let xmlHttp = new XMLHttpRequest();
     let data = [];
     let last_time = null;
     let g = null;
 
     function add_to_data(str) {
+      if(str.length === 0)
+        return;
       let splitted = str.split("\n");
       for (let line of splitted) {
         let d = line.split(",");
         let t = new Date(d[0]);
         let v = parseInt(d[1]);
         if(isNaN(v)) {
-          console.log(`${d} error ${d[1]} `);
+          if(d[1] === "missing") {
+            data.push([t, NaN]);
+          } else {
+            console.error(`${d} error ${d[1]} `);
+          }
         } else {
           data.push([t, v / 1000.0]);
         }
@@ -38,9 +44,30 @@
       }
     }
 
-    $(document).ready(function () {
+    if (!Date.prototype.toRISOString) {
+      (function() {
 
-      let xmlHttp = new XMLHttpRequest();
+        function pad(number) {
+          if (number < 10) {
+            return '0' + number;
+          }
+          return number;
+        }
+
+        Date.prototype.toRISOString = function() {
+          return this.getUTCFullYear() +
+            '-' + pad(this.getUTCMonth() + 1) +
+            '-' + pad(this.getUTCDate()) +
+            'T' + pad(this.getUTCHours()) +
+            ':' + pad(this.getUTCMinutes()) +
+            ':' + pad(this.getUTCSeconds()) +
+            'Z';
+        };
+
+      }());
+    }
+
+    function start_update_temp(sensorid) {
       // request initial data
       xmlHttp.open('GET', '/api/get/temp?id=' + sensorid, true);
       xmlHttp.onreadystatechange = function () {
@@ -49,25 +76,40 @@
           g = new Dygraph(document.getElementById("myDiv"), data,
                     {
                       drawPoints: true,
-                      showRoller: true,
-                      valueRange: [0.0, 40.0],
+                      digitsAfterDecimal: 3,
+                      showRangeSelector: true,
+                      drawGapEdgePoints: true,
+                      rangeSelectorHeight: 40,
+                      panEdgeFraction: 0.1,
+                      connectSeparatedPoints: false,
                       labels: ['Time', 'Temperature']
                     });
-          window.intervalId = setInterval(function() {
-            let xmlHttp = new XMLHttpRequest();
+          setInterval(function() {
             // request initial data
-            xmlHttp.open('GET', `/api/get/temp?id=${sensorid}&from=${last_time.toISOString()}`, true);
+            xmlHttp.open('GET', `/api/get/temp?id=${sensorid}&from=${last_time.toRISOString()}`, true);
             xmlHttp.onreadystatechange = function () {
               if (xmlHttp.readyState == 4) {
                 add_to_data(xmlHttp.responseText);
                 g.updateOptions( { 'file': data } );
               }
             }
+            xmlHttp.send(null);
           }, 5000);
         }
       };
       xmlHttp.send(null);
+    }
 
+    $(document).ready(function () {
+      xmlHttp.open('GET', '/api/get/sensors', true);
+      xmlHttp.onreadystatechange = function () {
+        if (xmlHttp.readyState == 4) {
+          let sensorid = xmlHttp.responseText;
+          console.log(`Get information from sensor ${sensorid}`);
+          start_update_temp(sensorid);
+        }
+      };
+      xmlHttp.send(null);
       });
   </script>
 

@@ -10,21 +10,16 @@ use regex::Regex;
 
 use std::sync::{Arc, RwLock};
 use std::thread;
+use std::time::Duration;
 
-use std::io;
 use std::io::copy;
-use hyper::status::StatusCode;
-use hyper::header::{SetCookie, Cookie, ContentType, ContentLength, HttpDate};
+use hyper::header::ContentType;
 use hyper::server::{Handler, Server, Request, Response};
 use hyper::{Get, Post};
 use hyper::uri::RequestUri::AbsolutePath;
 use hyper::mime::{Mime, TopLevel, SubLevel, Attr, Value};
 
-use std::error::Error;
-use std::path::PathBuf;
 use std::env;
-
-use std::str::FromStr;
 
 macro_rules! try_return(
     ($e:expr) => {{
@@ -44,9 +39,9 @@ enum Temperature {
 
 impl Temperature {
     fn has_changed(&self, other: &Temperature) -> bool {
-        match self {
-            &Temperature::MiliCelcius(temp1) => match other {
-                &Temperature::MiliCelcius(temp2) => (temp1 - temp2).abs() > 100,
+        match *self {
+            Temperature::MiliCelcius(temp1) => match *other {
+                Temperature::MiliCelcius(temp2) => (temp1 - temp2).abs() > 150,
                 _ => self != other,
             },
             _ => self != other,
@@ -133,19 +128,16 @@ impl Sensor {
 }
 
 struct SensorStore {
-    sensorid: String,
     data: Arc<RwLock<Vec<(time::Tm, Temperature)>>>,
-    thread: thread::JoinHandle<()>,
 }
 
 impl SensorStore {
     fn new(sensorid: &str) -> Self {
         let data = Arc::new(RwLock::new(vec![]));
         let sensorid = sensorid.to_owned();
-        SensorStore {
-            sensorid: sensorid.to_owned(),
-            data: data.clone(),
-            thread: thread::spawn(move || {
+        {
+            let data = data.clone();
+            thread::spawn(move || {
                 let sensor = Sensor::new(&sensorid);
                 let filename = format!("{}.csv", sensorid);
 
@@ -156,25 +148,23 @@ impl SensorStore {
                     let d: Vec<(time::Tm, Temperature)> = file.lines().filter_map(|x| x.ok())
                                 //.inspect(|s| println!("{}", s))
                                 .map(|s| {
-                                    let splitted: Vec<&str> = s.split(",").collect();
+                                    let splitted: Vec<&str> = s.split(',').collect();
                                     if splitted.len() != 2 {
                                         println!("skip invalid line line=\"{}\"", s);
                                         (time::now_utc(), Temperature::Invalid)
-                                    } else {
-                                        if let Ok(time) =time::strptime(&splitted[0], "%Y-%m-%dT%H:%M:%SZ") {
+                                    } else if let Ok(time) =time::strptime(splitted[0], "%Y-%m-%dT%H:%M:%SZ") {
                                             let temp = match splitted[1].parse::<i16>() {
                                                 Ok(temp) => Temperature::MiliCelcius(temp),
                                                 Err(_) => Temperature::Error(splitted[1].to_owned()),
                                             };
-                                            (time, temp)
-                                        } else {
-                                            println!("skip line with invalid time line=\"{}\"", s);
-                                            (time::now_utc(), Temperature::Invalid)
-                                        }
+                                        (time, temp)
+                                    } else {
+                                        println!("skip line with invalid time line=\"{}\"", s);
+                                        (time::now_utc(), Temperature::Invalid)
                                     }
                                 })
-                                .filter(|x| match x {
-                                    &(_, Temperature::Invalid) => false,
+                                .filter(|x| match *x {
+                                    (_, Temperature::Invalid) => false,
                                     _ => true,
                                 })
                                 .collect();
@@ -198,21 +188,24 @@ impl SensorStore {
                     }
                     std::thread::sleep(std::time::Duration::from_secs(5));
                 }
-            }),
+            });
+        }
+        SensorStore {
+            data: data
         }
     }
 
     fn all() -> BTreeMap<String,Self> {
-        Sensor::get_all_sensor_ids().iter().map(|id| (id.to_owned(), SensorStore::new(&id))).collect()
+        Sensor::get_all_sensor_ids().iter().map(|id| (id.to_owned(), SensorStore::new(id))).collect()
     }
 
     fn as_csv(&self) -> String {
         let data = self.data.read().unwrap();
         data.iter().map(|&(time, ref temp)| {
-            match temp {
-                &Temperature::MiliCelcius(ref temp) => format!("{},{}", time.rfc3339(), &temp),
-                &Temperature::Error(ref err) => format!("{},{}", time.rfc3339(), &err),
-                &Temperature::Invalid => format!("{},invalid", time.rfc3339()),
+            match *temp {
+                Temperature::MiliCelcius(ref temp) => format!("{},{}", time.rfc3339(), &temp),
+                Temperature::Error(ref err) => format!("{},{}", time.rfc3339(), &err),
+                Temperature::Invalid => format!("{},invalid", time.rfc3339()),
             }
         }).collect::<Vec<String>>().join("\n")
     }
@@ -222,12 +215,12 @@ impl SensorStore {
         data.iter().rev()
             .take_while(|&&(ref time, _)| time > from)
             .map(|&(time, ref temp)| {
-            match temp {
-                &Temperature::MiliCelcius(ref temp) => format!("{},{}", time.rfc3339(), &temp),
-                &Temperature::Error(ref err) => format!("{},{}", time.rfc3339(), &err),
-                &Temperature::Invalid => format!("{},invalid", time.rfc3339()),
+            match *temp {
+                Temperature::MiliCelcius(ref temp) => format!("{},{}", time.rfc3339(), &temp),
+                Temperature::Error(ref err) => format!("{},{}", time.rfc3339(), &err),
+                Temperature::Invalid => format!("{},invalid", time.rfc3339()),
             }
-        }).collect::<Vec<String>>().into_iter().rev().collect::<Vec<String>>().join("\n")
+        }).collect::<Vec<String>>().into_iter().rev().skip(1).collect::<Vec<String>>().join("\n")
     }
 }
 
@@ -246,6 +239,9 @@ impl Handler for SenderHandler {
                         o => o,
                     };
                     if u == "/api/get/sensors" {
+                        res.headers_mut().set(
+                                ContentType(Mime(TopLevel::Text, SubLevel::Plain,
+                                    vec![(Attr::Charset, Value::Utf8)])));
                         let mut res = try_return!(res.start());
                         let ret: String = self.sensors.iter().map(|(id,_)| {
                             id.to_owned()
@@ -255,15 +251,15 @@ impl Handler for SenderHandler {
                     } else if u.starts_with("/api/get/temp") {
                         let mut id: Option<&str> = None;
                         let mut from: Option<time::Tm> = None;
-                        let splitted: Vec<&str> = u.split("?").collect();
+                        let splitted: Vec<&str> = u.split('?').collect();
                         if splitted.len() == 2 {
-                            for query in splitted[1].split("&") {
-                                let sp: Vec<&str> = query.split("=").collect();
+                            for query in splitted[1].split('&') {
+                                let sp: Vec<&str> = query.split('=').collect();
                                 if splitted.len() == 2 {
                                     match sp[0] {
                                         "id" => id = Some(sp[1]),
                                         "from" => {
-                                            if let Ok(time) =time::strptime(&sp[1], "%Y-%m-%dT%H:%M:%SZ") {
+                                            if let Ok(time) =time::strptime(sp[1], "%Y-%m-%dT%H:%M:%SZ") {
                                                 from = Some(time);
                                             }
                                         },
@@ -330,10 +326,11 @@ fn main() {
         sensors: SensorStore::all(),
     };
 
-    for (id,_) in &http_handler.sensors {
+    for id in http_handler.sensors.keys() {
         println!(" * {}", id);
     }
 
-    let http_server = Server::http("0.0.0.0:8080").unwrap();
+    let mut http_server = Server::http("0.0.0.0:8080").unwrap();
+    http_server.keep_alive(Some(Duration::from_secs(15)));
     http_server.handle(http_handler).unwrap();
 }
