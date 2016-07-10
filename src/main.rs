@@ -5,16 +5,17 @@ extern crate hyper;
 use std::collections::BTreeMap;
 use std::io::BufReader;
 use std::io::prelude::*;
+use std::fs;
 use std::fs::{File, OpenOptions};
 use regex::Regex;
 
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::Duration;
 
 use std::io::copy;
 use hyper::header::ContentType;
-use hyper::server::{Handler, Server, Request, Response};
+use hyper::server::{Server, Request, Response};
 use hyper::{Get, Post};
 use hyper::uri::RequestUri::AbsolutePath;
 use hyper::mime::{Mime, TopLevel, SubLevel, Attr, Value};
@@ -127,63 +128,39 @@ impl Sensor {
     }
 }
 
+type SensorStoreDataType = (time::Tm, Temperature);
+type SensorStoreType = Vec<SensorStoreDataType>;
+
 struct SensorStore {
-    data: Arc<RwLock<Vec<(time::Tm, Temperature)>>>,
+    sensorid: String,
+    data: Arc<RwLock<SensorStoreType>>,
 }
 
 impl SensorStore {
     fn new(sensorid: &str) -> Self {
         let data = Arc::new(RwLock::new(vec![]));
-        let sensorid = sensorid.to_owned();
         {
+            let sensorid = sensorid.to_owned();
             let data = data.clone();
             thread::spawn(move || {
                 let sensor = Sensor::new(&sensorid);
-                let filename = format!("{}.csv", sensorid);
+
+                let filename = SensorStore::get_filename(&sensorid);
 
                 // load existing data
-                if let Ok(file) = File::open(&filename) {
+                if let Some(d) = SensorStore::read_from_file(&filename) {
                     println!("Read existing data for sensor {}", sensorid);
-                    let file = BufReader::new(file);
-                    let d: Vec<(time::Tm, Temperature)> = file.lines().filter_map(|x| x.ok())
-                                //.inspect(|s| println!("{}", s))
-                                .map(|s| {
-                                    let splitted: Vec<&str> = s.split(',').collect();
-                                    if splitted.len() != 2 {
-                                        println!("skip invalid line line=\"{}\"", s);
-                                        (time::now_utc(), Temperature::Invalid)
-                                    } else if let Ok(time) =time::strptime(splitted[0], "%Y-%m-%dT%H:%M:%SZ") {
-                                            let temp = match splitted[1].parse::<i16>() {
-                                                Ok(temp) => Temperature::MiliCelcius(temp),
-                                                Err(_) => Temperature::Error(splitted[1].to_owned()),
-                                            };
-                                        (time, temp)
-                                    } else {
-                                        println!("skip line with invalid time line=\"{}\"", s);
-                                        (time::now_utc(), Temperature::Invalid)
-                                    }
-                                })
-                                .filter(|x| match *x {
-                                    (_, Temperature::Invalid) => false,
-                                    _ => true,
-                                })
-                                .collect();
                     *data.write().unwrap() = d;
                 }
-
-                let mut file = OpenOptions::new().create(true).append(true).open(&filename).unwrap();
 
                 let mut last_temp = Temperature::Invalid;
                 loop {
                     let current_temp = sensor.read_temp();
-                    let time = time::now_utc();
                     if current_temp.has_changed(&last_temp) {
-                        data.write().unwrap().push((time, current_temp.clone()));
-                        match current_temp {
-                            Temperature::MiliCelcius(temp) => try_return!(file.write_all(format!("{},{}\n", time.rfc3339(), temp).as_bytes())),
-                            Temperature::Error(ref err) => try_return!(file.write_all(format!("{},{}\n", time.rfc3339(), &err).as_bytes())),
-                            Temperature::Invalid => {},
-                        };
+                        let d = (time::now_utc(), current_temp.clone());
+                        let mut data = data.write().unwrap();
+                        SensorStore::append_to_file(&filename, &d);
+                        data.push(d);
                         last_temp = current_temp;
                     }
                     std::thread::sleep(std::time::Duration::from_secs(5));
@@ -191,6 +168,7 @@ impl SensorStore {
             });
         }
         SensorStore {
+            sensorid: sensorid.to_owned(),
             data: data
         }
     }
@@ -199,28 +177,82 @@ impl SensorStore {
         Sensor::get_all_sensor_ids().iter().map(|id| (id.to_owned(), SensorStore::new(id))).collect()
     }
 
+    fn get_filename(sensorid: &str) -> String {
+        format!("{}.csv", sensorid)
+    }
+
+    fn append_to_file(filename: &str, d: &SensorStoreDataType) {
+        let mut file = OpenOptions::new().create(true).append(true).open(&filename).unwrap();
+        try_return!(file.write_all(format!("{}\n", SensorStore::as_csv_line(d)).as_bytes()));
+    }
+
+    fn read_from_file(filename: &str) -> Option<SensorStoreType> {
+        if let Ok(file) = File::open(filename) {
+            let file = BufReader::new(file);
+            Some(file.lines()
+                    .filter_map(|x| x.ok())
+                    .map(|s| {
+                        let splitted: Vec<&str> = s.split(',').collect();
+                        if splitted.len() != 2 {
+                            println!("skip invalid line line=\"{}\"", s);
+                            (time::now_utc(), Temperature::Invalid)
+                        } else if let Ok(time) =time::strptime(splitted[0], "%Y-%m-%dT%H:%M:%SZ") {
+                                let temp = match splitted[1].parse::<i16>() {
+                                    Ok(temp) => Temperature::MiliCelcius(temp),
+                                    Err(_) => Temperature::Error(splitted[1].to_owned()),
+                                };
+                            (time, temp)
+                        } else {
+                            println!("skip line with invalid time line=\"{}\"", s);
+                            (time::now_utc(), Temperature::Invalid)
+                        }
+                    })
+                    .filter(|x| match *x {
+                        (_, Temperature::Invalid) => false,
+                        _ => true,
+                    })
+                    .collect())
+        } else {
+            None
+        }
+    }
+
+    fn as_csv_line(data: &SensorStoreDataType) -> String {
+        let &(time, ref temp) = data;
+        match *temp {
+            Temperature::MiliCelcius(ref temp) => format!("{},{}", time.rfc3339(), &temp),
+            Temperature::Error(ref err) => format!("{},{}", time.rfc3339(), &err),
+            Temperature::Invalid => format!("{},invalid", time.rfc3339()),
+        }
+    }
+
+    fn as_csv_internal(data: &SensorStoreType) -> String {
+        data.iter().map(SensorStore::as_csv_line).collect::<Vec<String>>().join("\n")
+    }
+
     fn as_csv(&self) -> String {
         let data = self.data.read().unwrap();
-        data.iter().map(|&(time, ref temp)| {
-            match *temp {
-                Temperature::MiliCelcius(ref temp) => format!("{},{}", time.rfc3339(), &temp),
-                Temperature::Error(ref err) => format!("{},{}", time.rfc3339(), &err),
-                Temperature::Invalid => format!("{},invalid", time.rfc3339()),
-            }
-        }).collect::<Vec<String>>().join("\n")
+        SensorStore::as_csv_internal(&data)
     }
 
     fn as_csv_from(&self, from: &time::Tm) -> String {
         let data = self.data.read().unwrap();
         data.iter().rev()
             .take_while(|&&(ref time, _)| time > from)
-            .map(|&(time, ref temp)| {
-            match *temp {
-                Temperature::MiliCelcius(ref temp) => format!("{},{}", time.rfc3339(), &temp),
-                Temperature::Error(ref err) => format!("{},{}", time.rfc3339(), &err),
-                Temperature::Invalid => format!("{},invalid", time.rfc3339()),
-            }
-        }).collect::<Vec<String>>().into_iter().rev().skip(1).collect::<Vec<String>>().join("\n")
+            .map(SensorStore::as_csv_line)
+            .collect::<Vec<String>>()
+            .into_iter().rev().skip(1).collect::<Vec<String>>().join("\n")
+    }
+
+    fn remove(&mut self, t: &time::Tm) {
+        //println!("remove {:?}", t);
+        let mut data = self.data.write().unwrap();
+        data.retain(|&(tm,_)| tm != *t);
+        let filename = SensorStore::get_filename(&self.sensorid);
+        fs::rename(&filename, format!("{}.bak", &filename));
+        let mut file = OpenOptions::new().create(true).truncate(true).write(true).open(&filename).unwrap();
+        try_return!(file.write_all(SensorStore::as_csv_internal(&data).as_bytes()));
+        try_return!(file.write_all(b"\n"));
     }
 }
 
@@ -228,8 +260,25 @@ struct SenderHandler {
     sensors: BTreeMap<String, SensorStore>,
 }
 
-impl Handler for SenderHandler {
-    fn handle(&self, req: Request, mut res: Response) {
+impl SenderHandler {
+    fn parse_arguments<'a>(url: &'a str) -> Vec<(&'a str, &'a str)> {
+        let mut ret = vec![];
+        let splitted: Vec<&str> = url.split('?').collect();
+        if splitted.len() == 2 {
+            for query in splitted[1].split('&') {
+                let sp: Vec<&str> = query.split('=').collect();
+                match splitted.len() {
+                    0 => {},
+                    1 => ret.push((sp[0], "")),
+                    2 => ret.push((sp[0], sp[1])),
+                    _ => {},
+                }
+            }
+        }
+        ret
+    }
+
+    fn handle(&mut self, req: Request, mut res: Response) {
         let uri = req.uri.clone();
         match uri {
             AbsolutePath(ref path) => match (&req.method, &path[..]) {
@@ -248,26 +297,51 @@ impl Handler for SenderHandler {
                         }).collect::<Vec<String>>().join("\n");
                         try_return!(res.write_all(ret.as_bytes()));
                         try_return!(res.end());
+                    } else if u.starts_with("/api/remove/temp") {
+                        let mut id: Option<&str> = None;
+                        let mut t: Option<time::Tm> = None;
+                        for (name, value) in SenderHandler::parse_arguments(u) {
+                            match name {
+                                "id" => id = Some(value),
+                                "time" => {
+                                    if let Ok(time) =time::strptime(value, "%Y-%m-%dT%H:%M:%SZ") {
+                                        t = Some(time);
+                                    }
+                                },
+                                _ => {},
+                            }
+                        }
+
+                        if let Some(sensor) = self.sensors.get_mut(id.unwrap_or("")) {
+                            if let Some(t) = t {
+                                res.headers_mut().set(
+                                ContentType(Mime(TopLevel::Text, SubLevel::Plain,
+                                    vec![(Attr::Charset, Value::Utf8)])));
+                                let mut res = try_return!(res.start());
+                                sensor.remove(&t);
+                                try_return!(res.write_all(sensor.as_csv().as_bytes()));
+                                try_return!(res.end());
+                            } else {
+                                *res.status_mut() = hyper::NotFound;
+                            }
+                        } else {
+                            *res.status_mut() = hyper::NotFound;
+                        }
                     } else if u.starts_with("/api/get/temp") {
                         let mut id: Option<&str> = None;
                         let mut from: Option<time::Tm> = None;
-                        let splitted: Vec<&str> = u.split('?').collect();
-                        if splitted.len() == 2 {
-                            for query in splitted[1].split('&') {
-                                let sp: Vec<&str> = query.split('=').collect();
-                                if splitted.len() == 2 {
-                                    match sp[0] {
-                                        "id" => id = Some(sp[1]),
-                                        "from" => {
-                                            if let Ok(time) =time::strptime(sp[1], "%Y-%m-%dT%H:%M:%SZ") {
-                                                from = Some(time);
-                                            }
-                                        },
-                                        _ => {},
+                        for (name, value) in SenderHandler::parse_arguments(u) {
+                            match name {
+                                "id" => id = Some(value),
+                                "from" => {
+                                    if let Ok(time) =time::strptime(value, "%Y-%m-%dT%H:%M:%SZ") {
+                                        from = Some(time);
                                     }
-                                }
+                                },
+                                _ => {},
                             }
                         }
+
                         if let Some(sensor) = self.sensors.get(id.unwrap_or("")) {
                             res.headers_mut().set(
                                 ContentType(Mime(TopLevel::Text, SubLevel::Plain,
@@ -322,15 +396,15 @@ impl Handler for SenderHandler {
 
 fn main() {
     println!("Start temprec");
-    let http_handler = SenderHandler {
+    let http_handler = Mutex::new(SenderHandler {
         sensors: SensorStore::all(),
-    };
+    });
 
-    for id in http_handler.sensors.keys() {
+    for id in http_handler.lock().unwrap().sensors.keys() {
         println!(" * {}", id);
     }
 
     let mut http_server = Server::http("0.0.0.0:8080").unwrap();
     http_server.keep_alive(Some(Duration::from_secs(15)));
-    http_server.handle(http_handler).unwrap();
+    http_server.handle(move |req: Request, res: Response| http_handler.lock().unwrap().handle(req, res)).unwrap();
 }

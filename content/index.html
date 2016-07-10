@@ -22,6 +22,8 @@
     let data = [];
     let last_time = null;
     let g = null;
+    let interval = null;
+    let sensorid = "";
 
     function add_to_data(str) {
       if(str.length === 0)
@@ -67,7 +69,31 @@
       }());
     }
 
-    function start_update_temp(sensorid) {
+    function start_update_timer() {
+      if (interval == null) {
+        interval = setInterval(function() {
+          // request initial data
+          xmlHttp.open('GET', `/api/get/temp?id=${sensorid}&from=${last_time.toRISOString()}`, true);
+          xmlHttp.onreadystatechange = function () {
+            if (xmlHttp.readyState == 4) {
+              add_to_data(xmlHttp.responseText);
+              g.updateOptions( { 'file': data } );
+            }
+          }
+          xmlHttp.send(null);
+        }, 5000);
+      }
+    }
+
+    function stop_update_timer() {
+      if (interval != null) {
+        clearInterval(interval);
+        interval = null;
+      }
+    }
+
+    function start_update_temp(id) {
+      sensorid = id;
       // request initial data
       xmlHttp.open('GET', '/api/get/temp?id=' + sensorid, true);
       xmlHttp.onreadystatechange = function () {
@@ -84,17 +110,27 @@
                       connectSeparatedPoints: false,
                       labels: ['Time', 'Temperature']
                     });
-          setInterval(function() {
-            // request initial data
-            xmlHttp.open('GET', `/api/get/temp?id=${sensorid}&from=${last_time.toRISOString()}`, true);
-            xmlHttp.onreadystatechange = function () {
-              if (xmlHttp.readyState == 4) {
-                add_to_data(xmlHttp.responseText);
-                g.updateOptions( { 'file': data } );
+
+          $('html').keyup(function(e){
+              if(e.keyCode == 46) {
+                  let pos = g.getSelection();
+                  if(pos != -1) {
+                  stop_update_timer();
+                    xmlHttp.open('GET', `/api/remove/temp?id=${sensorid}&time=${data[pos][0].toRISOString()}`, true);
+                    xmlHttp.onreadystatechange = function () {
+                      if (xmlHttp.readyState == 4) {
+                        data = [];
+                        add_to_data(xmlHttp.responseText);
+                        g.updateOptions( { 'file': data } );
+                        start_update_timer();
+                      }
+                    }
+                    xmlHttp.send(null);
+                  }
               }
-            }
-            xmlHttp.send(null);
-          }, 5000);
+          });
+
+          start_update_timer();
         }
       };
       xmlHttp.send(null);
@@ -110,7 +146,7 @@
         }
       };
       xmlHttp.send(null);
-      });
+    });
   </script>
 
 </body>
