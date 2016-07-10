@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- The above 3 meta tags *must* come first in the head; any other head content must come *after* these tags -->
+  <title>Temprec</title>
+  <link rel="stylesheet" href="bower_components/semantic/dist/semantic.min.css">
+</head>
+
+<body>
+  <script src="bower_components/jquery/dist/jquery.min.js"></script>
+  <script src="bower_components/semantic/dist/semantic.min.js"></script>
+  <script src="bower_components/dygraphs/dygraph-combined.js"></script>
+
+  <div id="myDiv" style="width: 100%; height: 1000px;"></div>
+
+  <script>
+    const sensorid = "28-000003a4a7ff";
+    let data = [];
+    let last_time = null;
+    let g = null;
+
+    function add_to_data(str) {
+      let splitted = str.split("\n");
+      for (let line of splitted) {
+        let d = line.split(",");
+        let t = new Date(d[0]);
+        let v = parseInt(d[1]);
+        if(isNaN(v)) {
+          console.log(`${d} error ${d[1]} `);
+        } else {
+          data.push([t, v / 1000.0]);
+        }
+        last_time = t;
+      }
+    }
+
+    $(document).ready(function () {
+
+      let xmlHttp = new XMLHttpRequest();
+      // request initial data
+      xmlHttp.open('GET', '/api/get/temp?id=' + sensorid, true);
+      xmlHttp.onreadystatechange = function () {
+        if (xmlHttp.readyState == 4) {
+          add_to_data(xmlHttp.responseText);
+          g = new Dygraph(document.getElementById("myDiv"), data,
+                    {
+                      drawPoints: true,
+                      showRoller: true,
+                      valueRange: [0.0, 40.0],
+                      labels: ['Time', 'Temperature']
+                    });
+          window.intervalId = setInterval(function() {
+            let xmlHttp = new XMLHttpRequest();
+            // request initial data
+            xmlHttp.open('GET', `/api/get/temp?id=${sensorid}&from=${last_time.toISOString()}`, true);
+            xmlHttp.onreadystatechange = function () {
+              if (xmlHttp.readyState == 4) {
+                add_to_data(xmlHttp.responseText);
+                g.updateOptions( { 'file': data } );
+              }
+            }
+          }, 5000);
+        }
+      };
+      xmlHttp.send(null);
+
+      });
+  </script>
+
+</body>
+
+</html>
