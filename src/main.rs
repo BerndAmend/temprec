@@ -405,6 +405,6 @@ fn main() {
     }
 
     let mut http_server = Server::http("0.0.0.0:8080").unwrap();
-    http_server.keep_alive(Some(Duration::from_secs(15)));
+    http_server.keep_alive(None);
     http_server.handle(move |req: Request, res: Response| http_handler.lock().unwrap().handle(req, res)).unwrap();
 }
