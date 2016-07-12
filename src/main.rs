@@ -42,7 +42,7 @@ impl Temperature {
     fn has_changed(&self, other: &Temperature) -> bool {
         match *self {
             Temperature::MiliCelcius(temp1) => match *other {
-                Temperature::MiliCelcius(temp2) => (temp1 - temp2).abs() > 150,
+                Temperature::MiliCelcius(temp2) => (temp1 - temp2).abs() > 200,
                 _ => self != other,
             },
             _ => self != other,
