@@ -41,10 +41,12 @@ enum Temperature {
 impl Temperature {
     fn has_changed(&self, other: &Temperature) -> bool {
         match *self {
-            Temperature::MiliCelcius(temp1) => match *other {
-                Temperature::MiliCelcius(temp2) => (temp1 - temp2).abs() > 200,
-                _ => self != other,
-            },
+            Temperature::MiliCelcius(temp1) => {
+                match *other {
+                    Temperature::MiliCelcius(temp2) => (temp1 - temp2).abs() > 200,
+                    _ => self != other,
+                }
+            }
             _ => self != other,
         }
     }
@@ -86,13 +88,20 @@ impl Sensor {
         // read temperature
         if let Some(Ok(line)) = lines.next() {
             if let Some(cap) = self.cap_regex.captures(&line) {
-                if let Some(temp_string) = cap.at(2) {
+                if let Some(temp_string) = cap.get(2) {
+                    let temp_string = temp_string.as_str();
                     match temp_string.parse::<i16>() {
                         Ok(temp) => Temperature::MiliCelcius(temp),
-                        Err(ref err) => Temperature::Error(format!("Couldn't parse number string=\"{}\" err=\"{}\"", &temp_string, &err)),
+                        Err(ref err) => {
+                            Temperature::Error(format!("Couldn't parse number string=\"{}\" \
+                                                        err=\"{}\"",
+                                                       &temp_string,
+                                                       &err))
+                        }
                     }
                 } else {
-                    Temperature::Error(format!("Regular expression value 2 was invalid \"{}\"", &line))
+                    Temperature::Error(format!("Regular expression value 2 was invalid \"{}\"",
+                                               &line))
                 }
             } else {
                 Temperature::Error(format!("Couldn't parse temperature line \"{}\"", &line))
@@ -108,7 +117,8 @@ impl Sensor {
 
     fn get_sensor_base_path() -> String {
         if cfg!(target_arch = "x86_64") {
-            format!("{}/mnt/sys/bus/w1/devices/", env::home_dir().unwrap().display())
+            format!("{}/mnt/sys/bus/w1/devices/",
+                    env::home_dir().unwrap().display())
         } else {
             "/sys/bus/w1/devices/".to_owned()
         }
@@ -169,12 +179,15 @@ impl SensorStore {
         }
         SensorStore {
             sensorid: sensorid.to_owned(),
-            data: data
+            data: data,
         }
     }
 
-    fn all() -> BTreeMap<String,Self> {
-        Sensor::get_all_sensor_ids().iter().map(|id| (id.to_owned(), SensorStore::new(id))).collect()
+    fn all() -> BTreeMap<String, Self> {
+        Sensor::get_all_sensor_ids()
+            .iter()
+            .map(|id| (id.to_owned(), SensorStore::new(id)))
+            .collect()
     }
 
     fn get_filename(sensorid: &str) -> String {
@@ -190,28 +203,28 @@ impl SensorStore {
         if let Ok(file) = File::open(filename) {
             let file = BufReader::new(file);
             Some(file.lines()
-                    .filter_map(|x| x.ok())
-                    .map(|s| {
-                        let splitted: Vec<&str> = s.split(',').collect();
-                        if splitted.len() != 2 {
-                            println!("skip invalid line line=\"{}\"", s);
-                            (time::now_utc(), Temperature::Invalid)
-                        } else if let Ok(time) =time::strptime(splitted[0], "%Y-%m-%dT%H:%M:%SZ") {
-                                let temp = match splitted[1].parse::<i16>() {
-                                    Ok(temp) => Temperature::MiliCelcius(temp),
-                                    Err(_) => Temperature::Error(splitted[1].to_owned()),
-                                };
-                            (time, temp)
-                        } else {
-                            println!("skip line with invalid time line=\"{}\"", s);
-                            (time::now_utc(), Temperature::Invalid)
-                        }
-                    })
-                    .filter(|x| match *x {
-                        (_, Temperature::Invalid) => false,
-                        _ => true,
-                    })
-                    .collect())
+                .filter_map(|x| x.ok())
+                .map(|s| {
+                    let splitted: Vec<&str> = s.split(',').collect();
+                    if splitted.len() != 2 {
+                        println!("skip invalid line line=\"{}\"", s);
+                        (time::now_utc(), Temperature::Invalid)
+                    } else if let Ok(time) = time::strptime(splitted[0], "%Y-%m-%dT%H:%M:%SZ") {
+                        let temp = match splitted[1].parse::<i16>() {
+                            Ok(temp) => Temperature::MiliCelcius(temp),
+                            Err(_) => Temperature::Error(splitted[1].to_owned()),
+                        };
+                        (time, temp)
+                    } else {
+                        println!("skip line with invalid time line=\"{}\"", s);
+                        (time::now_utc(), Temperature::Invalid)
+                    }
+                })
+                .filter(|x| match *x {
+                    (_, Temperature::Invalid) => false,
+                    _ => true,
+                })
+                .collect())
         } else {
             None
         }
@@ -237,20 +250,26 @@ impl SensorStore {
 
     fn as_csv_from(&self, from: &time::Tm) -> String {
         let data = self.data.read().unwrap();
-        data.iter().rev()
+        data.iter()
+            .rev()
             .take_while(|&&(ref time, _)| time > from)
             .map(SensorStore::as_csv_line)
             .collect::<Vec<String>>()
-            .into_iter().rev().skip(1).collect::<Vec<String>>().join("\n")
+            .into_iter()
+            .rev()
+            .skip(1)
+            .collect::<Vec<String>>()
+            .join("\n")
     }
 
     fn remove(&mut self, t: &time::Tm) {
         //println!("remove {:?}", t);
         let mut data = self.data.write().unwrap();
-        data.retain(|&(tm,_)| tm != *t);
+        data.retain(|&(tm, _)| tm != *t);
         let filename = SensorStore::get_filename(&self.sensorid);
-        fs::rename(&filename, format!("{}.bak", &filename));
-        let mut file = OpenOptions::new().create(true).truncate(true).write(true).open(&filename).unwrap();
+        fs::rename(&filename, format!("{}.bak", &filename)).unwrap();
+        let mut file =
+            OpenOptions::new().create(true).truncate(true).write(true).open(&filename).unwrap();
         try_return!(file.write_all(SensorStore::as_csv_internal(&data).as_bytes()));
         try_return!(file.write_all(b"\n"));
     }
@@ -261,17 +280,17 @@ struct SenderHandler {
 }
 
 impl SenderHandler {
-    fn parse_arguments<'a>(url: &'a str) -> Vec<(&'a str, &'a str)> {
+    fn parse_arguments(url: &str) -> Vec<(&str, &str)> {
         let mut ret = vec![];
         let splitted: Vec<&str> = url.split('?').collect();
         if splitted.len() == 2 {
             for query in splitted[1].split('&') {
                 let sp: Vec<&str> = query.split('=').collect();
                 match splitted.len() {
-                    0 => {},
+                    0 => {}
                     1 => ret.push((sp[0], "")),
                     2 => ret.push((sp[0], sp[1])),
-                    _ => {},
+                    _ => {}
                 }
             }
         }
@@ -281,112 +300,122 @@ impl SenderHandler {
     fn handle(&mut self, req: Request, mut res: Response) {
         let uri = req.uri.clone();
         match uri {
-            AbsolutePath(ref path) => match (&req.method, &path[..]) {
-                (&Get, u) => {
-                    let u = match u {
-                        "/" => "/index.html",
-                        o => o,
-                    };
-                    if u == "/api/get/sensors" {
-                        res.headers_mut().set(
-                                ContentType(Mime(TopLevel::Text, SubLevel::Plain,
-                                    vec![(Attr::Charset, Value::Utf8)])));
-                        let mut res = try_return!(res.start());
-                        let ret: String = self.sensors.iter().map(|(id,_)| {
-                            id.to_owned()
-                        }).collect::<Vec<String>>().join("\n");
-                        try_return!(res.write_all(ret.as_bytes()));
-                        try_return!(res.end());
-                    } else if u.starts_with("/api/remove/temp") {
-                        let mut id: Option<&str> = None;
-                        let mut t: Option<time::Tm> = None;
-                        for (name, value) in SenderHandler::parse_arguments(u) {
-                            match name {
-                                "id" => id = Some(value),
-                                "time" => {
-                                    if let Ok(time) =time::strptime(value, "%Y-%m-%dT%H:%M:%SZ") {
-                                        t = Some(time);
-                                    }
-                                },
-                                _ => {},
-                            }
-                        }
-
-                        if let Some(sensor) = self.sensors.get_mut(id.unwrap_or("")) {
-                            if let Some(t) = t {
-                                res.headers_mut().set(
-                                ContentType(Mime(TopLevel::Text, SubLevel::Plain,
-                                    vec![(Attr::Charset, Value::Utf8)])));
-                                let mut res = try_return!(res.start());
-                                sensor.remove(&t);
-                                try_return!(res.write_all(sensor.as_csv().as_bytes()));
-                                try_return!(res.end());
-                            } else {
-                                *res.status_mut() = hyper::NotFound;
-                            }
-                        } else {
-                            *res.status_mut() = hyper::NotFound;
-                        }
-                    } else if u.starts_with("/api/get/temp") {
-                        let mut id: Option<&str> = None;
-                        let mut from: Option<time::Tm> = None;
-                        for (name, value) in SenderHandler::parse_arguments(u) {
-                            match name {
-                                "id" => id = Some(value),
-                                "from" => {
-                                    if let Ok(time) =time::strptime(value, "%Y-%m-%dT%H:%M:%SZ") {
-                                        from = Some(time);
-                                    }
-                                },
-                                _ => {},
-                            }
-                        }
-
-                        if let Some(sensor) = self.sensors.get(id.unwrap_or("")) {
-                            res.headers_mut().set(
-                                ContentType(Mime(TopLevel::Text, SubLevel::Plain,
-                                    vec![(Attr::Charset, Value::Utf8)])));
+            AbsolutePath(ref path) => {
+                match (&req.method, &path[..]) {
+                    (&Get, u) => {
+                        let u = match u {
+                            "/" => "/index.html",
+                            o => o,
+                        };
+                        if u == "/api/get/sensors" {
+                            res.headers_mut().set(ContentType(Mime(TopLevel::Text,
+                                                                   SubLevel::Plain,
+                                                                   vec![(Attr::Charset,
+                                                                         Value::Utf8)])));
                             let mut res = try_return!(res.start());
-                            if let Some(from) = from {
-                                // transfer only what was requested
-                                try_return!(res.write_all(sensor.as_csv_from(&from).as_bytes()));
-                            } else {
-                                // transfer everything
-                                try_return!(res.write_all(sensor.as_csv().as_bytes()));
-                            }
+                            let ret: String = self.sensors
+                                .iter()
+                                .map(|(id, _)| id.to_owned())
+                                .collect::<Vec<String>>()
+                                .join("\n");
+                            try_return!(res.write_all(ret.as_bytes()));
                             try_return!(res.end());
-                        } else {
-                            *res.status_mut() = hyper::NotFound;
-                        }
-                    } else {
-                        //println!("request: {}", u);
-                        match File::open(format!("content/{}", u)) {
-                            Ok(mut f) => {
-                                let mut res = try_return!(res.start());
-                                try_return!(copy(&mut f, &mut res));
-                                try_return!(res.end());
-                            },
-                            Err(e) => {
-                                println!("url: {} error: {}", u, e);
+                        } else if u.starts_with("/api/remove/temp") {
+                            let mut id: Option<&str> = None;
+                            let mut t: Option<time::Tm> = None;
+                            for (name, value) in SenderHandler::parse_arguments(u) {
+                                match name {
+                                    "id" => id = Some(value),
+                                    "time" => {
+                                        if let Ok(time) = time::strptime(value,
+                                                                         "%Y-%m-%dT%H:%M:%SZ") {
+                                            t = Some(time);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+
+                            if let Some(sensor) = self.sensors.get_mut(id.unwrap_or("")) {
+                                if let Some(t) = t {
+                                    res.headers_mut().set(ContentType(Mime(TopLevel::Text,
+                                                                           SubLevel::Plain,
+                                                                           vec![(Attr::Charset,
+                                                                                 Value::Utf8)])));
+                                    let mut res = try_return!(res.start());
+                                    sensor.remove(&t);
+                                    try_return!(res.write_all(sensor.as_csv().as_bytes()));
+                                    try_return!(res.end());
+                                } else {
+                                    *res.status_mut() = hyper::NotFound;
+                                }
+                            } else {
                                 *res.status_mut() = hyper::NotFound;
-                            },
+                            }
+                        } else if u.starts_with("/api/get/temp") {
+                            let mut id: Option<&str> = None;
+                            let mut from: Option<time::Tm> = None;
+                            for (name, value) in SenderHandler::parse_arguments(u) {
+                                match name {
+                                    "id" => id = Some(value),
+                                    "from" => {
+                                        if let Ok(time) = time::strptime(value,
+                                                                         "%Y-%m-%dT%H:%M:%SZ") {
+                                            from = Some(time);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+
+                            if let Some(sensor) = self.sensors.get(id.unwrap_or("")) {
+                                res.headers_mut().set(ContentType(Mime(TopLevel::Text,
+                                                                       SubLevel::Plain,
+                                                                       vec![(Attr::Charset,
+                                                                             Value::Utf8)])));
+                                let mut res = try_return!(res.start());
+                                if let Some(from) = from {
+                                    // transfer only what was requested
+                                    try_return!(res.write_all(sensor.as_csv_from(&from).as_bytes()));
+                                } else {
+                                    // transfer everything
+                                    try_return!(res.write_all(sensor.as_csv().as_bytes()));
+                                }
+                                try_return!(res.end());
+                            } else {
+                                *res.status_mut() = hyper::NotFound;
+                            }
+                        } else {
+                            //println!("request: {}", u);
+                            match File::open(format!("content/{}", u)) {
+                                Ok(mut f) => {
+                                    let mut res = try_return!(res.start());
+                                    try_return!(copy(&mut f, &mut res));
+                                    try_return!(res.end());
+                                }
+                                Err(e) => {
+                                    println!("url: {} error: {}", u, e);
+                                    *res.status_mut() = hyper::NotFound;
+                                }
+                            }
+                        }
+                        return;
+                    }
+                    (&Post, u) => {
+                        match u {
+                            "/api/set_alias" => {}
+                            _ => {
+                                *res.status_mut() = hyper::NotFound;
+                                return;
+                            }
                         }
                     }
-                    return;
-                },
-                (&Post, u) => match u {
-                    "/api/set_alias" => {
-                    },
                     _ => {
                         *res.status_mut() = hyper::NotFound;
                         return;
-                    },
-                },
-                _ => {
-                    *res.status_mut() = hyper::NotFound;
-                    return;
+                    }
                 }
-            },
+            }
             _ => {
                 return;
             }
@@ -396,9 +425,7 @@ impl SenderHandler {
 
 fn main() {
     println!("Start temprec");
-    let http_handler = Mutex::new(SenderHandler {
-        sensors: SensorStore::all(),
-    });
+    let http_handler = Mutex::new(SenderHandler { sensors: SensorStore::all() });
 
     for id in http_handler.lock().unwrap().sensors.keys() {
         println!(" * {}", id);
@@ -406,5 +433,8 @@ fn main() {
 
     let mut http_server = Server::http("0.0.0.0:8080").unwrap();
     http_server.keep_alive(None);
-    http_server.handle(move |req: Request, res: Response| http_handler.lock().unwrap().handle(req, res)).unwrap();
+    http_server.handle(move |req: Request, res: Response| {
+            http_handler.lock().unwrap().handle(req, res)
+        })
+        .unwrap();
 }
