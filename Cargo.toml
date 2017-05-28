@@ -6,4 +6,6 @@ authors = ["Bernd Amend <bernd.amend@gmail.com>"]
 [dependencies]
 regex = "*"
 time = "*"
-hyper = "*"
+rocket = "*"
+rocket_codegen = "*"
+dht22_pi = "*"

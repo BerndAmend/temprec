@@ -73,7 +73,7 @@
       if (interval == null) {
         interval = setInterval(function() {
           // request initial data
-          xmlHttp.open('GET', `/api/get/temp?id=${sensorid}&from=${last_time.toRISOString()}`, true);
+          xmlHttp.open('GET', `/api/get/${sensorid}/${last_time.toRISOString()}`, true);
           xmlHttp.onreadystatechange = function () {
             if (xmlHttp.readyState == 4) {
               add_to_data(xmlHttp.responseText);
@@ -95,7 +95,7 @@
     function start_update_temp(id) {
       sensorid = id;
       // request initial data
-      xmlHttp.open('GET', '/api/get/temp?id=' + sensorid, true);
+      xmlHttp.open('GET', '/api/get/' + sensorid, true);
       xmlHttp.onreadystatechange = function () {
         if (xmlHttp.readyState == 4) {
           add_to_data(xmlHttp.responseText);

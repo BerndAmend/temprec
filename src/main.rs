@@ -1,6 +1,16 @@
+#![feature(plugin, custom_derive)]
+#![plugin(rocket_codegen)]
+
 extern crate regex;
 extern crate time;
-extern crate hyper;
+extern crate rocket;
+extern crate dht22_pi;
+
+use std::io;
+use std::path::{Path, PathBuf};
+
+use rocket::State;
+use rocket::response::NamedFile;
 
 use std::collections::BTreeMap;
 use std::io::BufReader;
@@ -11,14 +21,6 @@ use regex::Regex;
 
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
-use std::time::Duration;
-
-use std::io::copy;
-use hyper::header::ContentType;
-use hyper::server::{Server, Request, Response};
-use hyper::{Get, Post};
-use hyper::uri::RequestUri::AbsolutePath;
-use hyper::mime::{Mime, TopLevel, SubLevel, Attr, Value};
 
 use std::env;
 
@@ -107,7 +109,7 @@ impl Sensor {
                 Temperature::Error(format!("Couldn't parse temperature line \"{}\"", &line))
             }
         } else {
-            return Temperature::Error("temperature line couldn't be read".to_owned());
+            Temperature::Error("temperature line couldn't be read".to_owned())
         }
     }
 
@@ -181,13 +183,6 @@ impl SensorStore {
             sensorid: sensorid.to_owned(),
             data: data,
         }
-    }
-
-    fn all() -> BTreeMap<String, Self> {
-        Sensor::get_all_sensor_ids()
-            .iter()
-            .map(|id| (id.to_owned(), SensorStore::new(id)))
-            .collect()
     }
 
     fn get_filename(sensorid: &str) -> String {
@@ -275,166 +270,96 @@ impl SensorStore {
     }
 }
 
-struct SenderHandler {
-    sensors: BTreeMap<String, SensorStore>,
+struct Sensors {
+    sensors: BTreeMap<String, SensorStore>
 }
 
-impl SenderHandler {
-    fn parse_arguments(url: &str) -> Vec<(&str, &str)> {
-        let mut ret = vec![];
-        let splitted: Vec<&str> = url.split('?').collect();
-        if splitted.len() == 2 {
-            for query in splitted[1].split('&') {
-                let sp: Vec<&str> = query.split('=').collect();
-                match splitted.len() {
-                    0 => {}
-                    1 => ret.push((sp[0], "")),
-                    2 => ret.push((sp[0], sp[1])),
-                    _ => {}
-                }
-            }
+type MSensors = Mutex<Sensors>;
+
+impl Sensors {
+    fn all() -> Sensors {
+        Sensors {
+            sensors: Sensor::get_all_sensor_ids()
+                        .iter()
+                        .map(|id| (id.to_owned(), SensorStore::new(id)))
+                        .collect()
         }
-        ret
     }
+}
 
-    fn handle(&mut self, req: Request, mut res: Response) {
-        let uri = req.uri.clone();
-        match uri {
-            AbsolutePath(ref path) => {
-                match (&req.method, &path[..]) {
-                    (&Get, u) => {
-                        let u = match u {
-                            "/" => "/index.html",
-                            o => o,
-                        };
-                        if u == "/api/get/sensors" {
-                            res.headers_mut().set(ContentType(Mime(TopLevel::Text,
-                                                                   SubLevel::Plain,
-                                                                   vec![(Attr::Charset,
-                                                                         Value::Utf8)])));
-                            let mut res = try_return!(res.start());
-                            let ret: String = self.sensors
-                                .iter()
-                                .map(|(id, _)| id.to_owned())
-                                .collect::<Vec<String>>()
-                                .join("\n");
-                            try_return!(res.write_all(ret.as_bytes()));
-                            try_return!(res.end());
-                        } else if u.starts_with("/api/remove/temp") {
-                            let mut id: Option<&str> = None;
-                            let mut t: Option<time::Tm> = None;
-                            for (name, value) in SenderHandler::parse_arguments(u) {
-                                match name {
-                                    "id" => id = Some(value),
-                                    "time" => {
-                                        if let Ok(time) = time::strptime(value,
-                                                                         "%Y-%m-%dT%H:%M:%SZ") {
-                                            t = Some(time);
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
+#[get("/")]
+fn index() -> io::Result<NamedFile> {
+    NamedFile::open("content/index.html")
+}
 
-                            if let Some(sensor) = self.sensors.get_mut(id.unwrap_or("")) {
-                                if let Some(t) = t {
-                                    res.headers_mut().set(ContentType(Mime(TopLevel::Text,
-                                                                           SubLevel::Plain,
-                                                                           vec![(Attr::Charset,
-                                                                                 Value::Utf8)])));
-                                    let mut res = try_return!(res.start());
-                                    sensor.remove(&t);
-                                    try_return!(res.write_all(sensor.as_csv().as_bytes()));
-                                    try_return!(res.end());
-                                } else {
-                                    *res.status_mut() = hyper::NotFound;
-                                }
-                            } else {
-                                *res.status_mut() = hyper::NotFound;
-                            }
-                        } else if u.starts_with("/api/get/temp") {
-                            let mut id: Option<&str> = None;
-                            let mut from: Option<time::Tm> = None;
-                            for (name, value) in SenderHandler::parse_arguments(u) {
-                                match name {
-                                    "id" => id = Some(value),
-                                    "from" => {
-                                        if let Ok(time) = time::strptime(value,
-                                                                         "%Y-%m-%dT%H:%M:%SZ") {
-                                            from = Some(time);
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
+#[get("/<file..>", rank = 2)]
+fn files(file: PathBuf) -> Option<NamedFile> {
+    NamedFile::open(Path::new("content/").join(file)).ok()
+}
 
-                            if let Some(sensor) = self.sensors.get(id.unwrap_or("")) {
-                                res.headers_mut().set(ContentType(Mime(TopLevel::Text,
-                                                                       SubLevel::Plain,
-                                                                       vec![(Attr::Charset,
-                                                                             Value::Utf8)])));
-                                let mut res = try_return!(res.start());
-                                if let Some(from) = from {
-                                    // transfer only what was requested
-                                    try_return!(res.write_all(sensor.as_csv_from(&from).as_bytes()));
-                                } else {
-                                    // transfer everything
-                                    try_return!(res.write_all(sensor.as_csv().as_bytes()));
-                                }
-                                try_return!(res.end());
-                            } else {
-                                *res.status_mut() = hyper::NotFound;
-                            }
-                        } else {
-                            //println!("request: {}", u);
-                            match File::open(format!("content/{}", u)) {
-                                Ok(mut f) => {
-                                    let mut res = try_return!(res.start());
-                                    try_return!(copy(&mut f, &mut res));
-                                    try_return!(res.end());
-                                }
-                                Err(e) => {
-                                    println!("url: {} error: {}", u, e);
-                                    *res.status_mut() = hyper::NotFound;
-                                }
-                            }
-                        }
-                        return;
-                    }
-                    (&Post, u) => {
-                        match u {
-                            "/api/set_alias" => {}
-                            _ => {
-                                *res.status_mut() = hyper::NotFound;
-                                return;
-                            }
-                        }
-                    }
-                    _ => {
-                        *res.status_mut() = hyper::NotFound;
-                        return;
-                    }
-                }
-            }
-            _ => {
-                return;
-            }
-        };
+#[get("/api/get/sensors")]
+fn sensor_list(sensors: State<MSensors>) -> String {
+    sensors.lock().unwrap()
+        .sensors.iter()
+        .map(|(id, _)| id.to_owned())
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
+#[get("/api/get/<id>")]
+fn get_temp(id: &str, sensors: State<MSensors>) -> Option<String> {
+    let sensors = sensors.lock().unwrap();
+    let sensors = &sensors.sensors;
+
+    if let Some(sensor) = sensors.get(id) {
+        Some(sensor.as_csv())
+    } else {
+        None
+    }
+}
+
+#[get("/api/get/<id>/<from>")]
+fn get_temp_from(id: &str, from: &str, sensors: State<MSensors>) -> Option<String> {
+    let sensors = sensors.lock().unwrap();
+    if let Some(sensor) = sensors.sensors.get(id) {
+        if let Ok(t) = time::strptime(from, "%Y-%m-%dT%H:%M:%SZ") {
+            Some(sensor.as_csv_from(&t))
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+#[get("/api/remove/<id>/<time>")]
+fn remove_temp(id: &str, time: &str, sensors: State<MSensors>) -> Option<String> {
+    let mut sensors = sensors.lock().unwrap();
+    if let Some(sensor) = sensors.sensors.get_mut(id) {
+        if let Ok(t) = time::strptime(time, "%Y-%m-%dT%H:%M:%SZ") {
+            sensor.remove(&t);
+            Some(sensor.as_csv())
+        } else {
+            None
+        }
+    } else {
+        None
     }
 }
 
 fn main() {
     println!("Start temprec");
-    let http_handler = Mutex::new(SenderHandler { sensors: SensorStore::all() });
 
-    for id in http_handler.lock().unwrap().sensors.keys() {
+    let result = dht22_pi::read(17);
+    println!("intial read={:?}", result);
+
+    let sensors = Sensors::all();
+    for id in sensors.sensors.keys() {
         println!(" * {}", id);
     }
 
-    let mut http_server = Server::http("0.0.0.0:8080").unwrap();
-    http_server.keep_alive(None);
-    http_server.handle(move |req: Request, res: Response| {
-            http_handler.lock().unwrap().handle(req, res)
-        })
-        .unwrap();
+    rocket::ignite()
+        .manage(Mutex::new(sensors))
+        .mount("/", routes![index, sensor_list, get_temp, get_temp_from, remove_temp, files])
+        .launch();
 }
