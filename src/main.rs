@@ -24,7 +24,7 @@ use std::thread;
 
 use std::env;
 
-#[derive(Debug,PartialEq,Eq,Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 enum Temperature {
     Invalid,
     MiliCelcius(i32),
@@ -88,20 +88,26 @@ impl Sensor {
                             if temp >= -55000 && temp <= 125000 {
                                 Temperature::MiliCelcius(temp)
                             } else {
-                                Temperature::Error(format!("Measured temperature {} is outside of sensor range",
-                                                           temp))
+                                Temperature::Error(format!(
+                                    "Measured temperature {} is outside of sensor range",
+                                    temp
+                                ))
                             }
                         }
                         Err(ref err) => {
-                            Temperature::Error(format!("Couldn't parse number string=\"{}\" \
+                            Temperature::Error(format!(
+                                "Couldn't parse number string=\"{}\" \
                                                         err=\"{}\"",
-                                                       &temp_string,
-                                                       &err))
+                                &temp_string,
+                                &err
+                            ))
                         }
                     }
                 } else {
-                    Temperature::Error(format!("Regular expression value 2 was invalid \"{}\"",
-                                               &line))
+                    Temperature::Error(format!(
+                        "Regular expression value 2 was invalid \"{}\"",
+                        &line
+                    ))
                 }
             } else {
                 Temperature::Error(format!("Couldn't parse temperature line \"{}\"", &line))
@@ -117,8 +123,10 @@ impl Sensor {
 
     fn get_sensor_base_path() -> String {
         if cfg!(target_arch = "x86_64") {
-            format!("{}/mnt/sys/bus/w1/devices/",
-                    env::home_dir().unwrap().display())
+            format!(
+                "{}/mnt/sys/bus/w1/devices/",
+                env::home_dir().unwrap().display()
+            )
         } else {
             "/sys/bus/w1/devices/".to_owned()
         }
@@ -207,29 +215,31 @@ impl SensorStore {
     fn read_from_file(filename: &str) -> Option<SensorStoreType> {
         if let Ok(file) = File::open(filename) {
             let file = BufReader::new(file);
-            Some(file.lines()
-                     .filter_map(|x| x.ok())
-                     .map(|s| {
-                let splitted: Vec<&str> = s.split(',').collect();
-                if splitted.len() != 2 {
-                    println!("skip invalid line line=\"{}\"", s);
-                    (time::now_utc(), Temperature::Invalid)
-                } else if let Ok(time) = time::strptime(splitted[0], "%Y-%m-%dT%H:%M:%SZ") {
-                    let temp = match splitted[1].parse::<i32>() {
-                        Ok(temp) => Temperature::MiliCelcius(temp),
-                        Err(_) => Temperature::Error(splitted[1].to_owned()),
-                    };
-                    (time, temp)
-                } else {
-                    println!("skip line with invalid time line=\"{}\"", s);
-                    (time::now_utc(), Temperature::Invalid)
-                }
-            })
-                     .filter(|x| match *x {
-                                 (_, Temperature::Invalid) => false,
-                                 _ => true,
-                             })
-                     .collect())
+            Some(
+                file.lines()
+                    .filter_map(|x| x.ok())
+                    .map(|s| {
+                        let splitted: Vec<&str> = s.split(',').collect();
+                        if splitted.len() != 2 {
+                            println!("skip invalid line line=\"{}\"", s);
+                            (time::now_utc(), Temperature::Invalid)
+                        } else if let Ok(time) = time::strptime(splitted[0], "%Y-%m-%dT%H:%M:%SZ") {
+                            let temp = match splitted[1].parse::<i32>() {
+                                Ok(temp) => Temperature::MiliCelcius(temp),
+                                Err(_) => Temperature::Error(splitted[1].to_owned()),
+                            };
+                            (time, temp)
+                        } else {
+                            println!("skip line with invalid time line=\"{}\"", s);
+                            (time::now_utc(), Temperature::Invalid)
+                        }
+                    })
+                    .filter(|x| match *x {
+                        (_, Temperature::Invalid) => false,
+                        _ => true,
+                    })
+                    .collect(),
+            )
         } else {
             None
         }
@@ -282,7 +292,9 @@ impl SensorStore {
             .write(true)
             .open(&filename)
             .unwrap();
-        file.write_all(SensorStore::as_csv_internal(&data).as_bytes())?;
+        file.write_all(
+            SensorStore::as_csv_internal(&data).as_bytes(),
+        )?;
         file.write_all(b"\n")
     }
 }
@@ -384,12 +396,16 @@ fn main() {
 
     rocket::ignite()
         .manage(Mutex::new(sensors))
-        .mount("/",
-               routes![index,
-                       sensor_list,
-                       get_temp,
-                       get_temp_from,
-                       remove_temp,
-                       files])
+        .mount(
+            "/",
+            routes![
+                index,
+                sensor_list,
+                get_temp,
+                get_temp_from,
+                remove_temp,
+                files,
+            ],
+        )
         .launch();
 }
