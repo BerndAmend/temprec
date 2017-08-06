@@ -9,13 +9,11 @@ extern crate dht22_pi;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use rocket::State;
 use rocket::response::NamedFile;
 
 use std::collections::BTreeMap;
 use std::io::BufReader;
 use std::io::prelude::*;
-use std::fs;
 use std::fs::{File, OpenOptions};
 use regex::Regex;
 
@@ -52,9 +50,9 @@ struct Sensor {
 }
 
 impl Sensor {
-    fn new(sensorid: &str) -> Self {
+    fn new(id: &str) -> Self {
         Sensor {
-            path: Self::get_sensor_filename(sensorid),
+            path: Self::get_sensor_filename(id),
             crc_regex: Regex::new(r"([0-9a-f]{2} ){9}: crc=[0-9a-f]{2} YES").unwrap(),
             cap_regex: Regex::new(r"([0-9a-f]{2} ){9}t=([+-]?[0-9]+)").unwrap(),
         }
@@ -85,7 +83,7 @@ impl Sensor {
                     let temp_string = temp_string.as_str();
                     match temp_string.parse::<i32>() {
                         Ok(temp) => {
-                            if temp >= -55000 && temp <= 125000 {
+                            if temp >= -55_000 && temp <= 125_000 {
                                 Temperature::MiliCelcius(temp)
                             } else {
                                 Temperature::Error(format!(
@@ -117,8 +115,8 @@ impl Sensor {
         }
     }
 
-    fn get_sensor_filename(sensorid: &str) -> String {
-        format!("{}/{}/w1_slave", Self::get_sensor_base_path(), sensorid)
+    fn get_sensor_filename(id: &str) -> String {
+        format!("{}/{}/w1_slave", Self::get_sensor_base_path(), id)
     }
 
     fn get_sensor_base_path() -> String {
@@ -152,28 +150,47 @@ impl Sensor {
     }
 }
 
-type SensorStoreDataType = (time::Tm, Temperature);
-type SensorStoreType = Vec<SensorStoreDataType>;
+struct Measurement {
+    time: time::Tm,
+    temp: Temperature,
+}
+
+impl Measurement {
+    fn new(time: time::Tm, temp: Temperature) -> Measurement {
+        Measurement {
+            time: time,
+            temp: temp,
+        }
+    }
+
+    fn as_csv_line(&self) -> String {
+        match self.temp {
+            Temperature::MiliCelcius(ref temp) => format!("{},{}\n", self.time.rfc3339(), &temp),
+            Temperature::Error(ref err) => format!("{},{}\n", self.time.rfc3339(), &err),
+            Temperature::Invalid => format!("{},invalid\n", self.time.rfc3339()),
+        }
+    }
+}
 
 struct SensorStore {
-    sensorid: String,
-    data: Arc<RwLock<SensorStoreType>>,
+    id: String,
+    data: Arc<RwLock<Vec<Measurement>>>,
 }
 
 impl SensorStore {
-    fn new(sensorid: &str) -> Self {
+    fn new(id: &str) -> Self {
         let data = Arc::new(RwLock::new(vec![]));
         {
-            let sensorid = sensorid.to_owned();
+            let id = id.to_owned();
             let data = data.clone();
             thread::spawn(move || {
-                let sensor = Sensor::new(&sensorid);
+                let sensor = Sensor::new(&id);
 
-                let filename = SensorStore::get_filename(&sensorid);
+                let filename = format!("{}.csv", &id);
 
                 // load existing data
                 if let Some(d) = SensorStore::read_from_file(&filename) {
-                    println!("Read existing data for sensor {}", sensorid);
+                    println!("Read existing data for sensor {}", id);
                     *data.write().unwrap() = d;
                 }
 
@@ -181,12 +198,11 @@ impl SensorStore {
                 loop {
                     let current_temp = sensor.read_temp();
                     if current_temp.has_changed(&last_temp) {
-                        let d = (time::now_utc(), current_temp.clone());
-                        let mut data = data.write().unwrap();
+                        let d = Measurement::new(time::now_utc(), current_temp.clone());
                         if let Err(err) = SensorStore::append_to_file(&filename, &d) {
                             println!("Couldn't write sensor measurement err=\"{}\"", err);
                         }
-                        data.push(d);
+                        data.write().unwrap().push(d);
                         last_temp = current_temp;
                     }
                     std::thread::sleep(std::time::Duration::from_secs(5));
@@ -194,25 +210,21 @@ impl SensorStore {
             });
         }
         SensorStore {
-            sensorid: sensorid.to_owned(),
+            id: id.to_owned(),
             data: data,
         }
     }
 
-    fn get_filename(sensorid: &str) -> String {
-        format!("{}.csv", sensorid)
-    }
-
-    fn append_to_file(filename: &str, d: &SensorStoreDataType) -> io::Result<()> {
+    fn append_to_file(filename: &str, d: &Measurement) -> io::Result<()> {
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&filename)
             .unwrap();
-        file.write_all(format!("{}\n", SensorStore::as_csv_line(d)).as_bytes())
+        file.write_all(d.as_csv_line().as_bytes())
     }
 
-    fn read_from_file(filename: &str) -> Option<SensorStoreType> {
+    fn read_from_file(filename: &str) -> Option<Vec<Measurement>> {
         if let Ok(file) = File::open(filename) {
             let file = BufReader::new(file);
             Some(
@@ -221,21 +233,21 @@ impl SensorStore {
                     .map(|s| {
                         let splitted: Vec<&str> = s.split(',').collect();
                         if splitted.len() != 2 {
-                            println!("skip invalid line line=\"{}\"", s);
-                            (time::now_utc(), Temperature::Invalid)
+                            println!("skip invalid line \"{}\"", s);
+                            Measurement::new(time::now_utc(), Temperature::Invalid)
                         } else if let Ok(time) = time::strptime(splitted[0], "%Y-%m-%dT%H:%M:%SZ") {
                             let temp = match splitted[1].parse::<i32>() {
                                 Ok(temp) => Temperature::MiliCelcius(temp),
                                 Err(_) => Temperature::Error(splitted[1].to_owned()),
                             };
-                            (time, temp)
+                            Measurement::new(time, temp)
                         } else {
                             println!("skip line with invalid time line=\"{}\"", s);
-                            (time::now_utc(), Temperature::Invalid)
+                            Measurement::new(time::now_utc(), Temperature::Invalid)
                         }
                     })
                     .filter(|x| match *x {
-                        (_, Temperature::Invalid) => false,
+                        Measurement { temp: Temperature::Invalid, .. } => false,
                         _ => true,
                     })
                     .collect(),
@@ -245,65 +257,32 @@ impl SensorStore {
         }
     }
 
-    fn as_csv_line(data: &SensorStoreDataType) -> String {
-        let &(time, ref temp) = data;
-        match *temp {
-            Temperature::MiliCelcius(ref temp) => format!("{},{}", time.rfc3339(), &temp),
-            Temperature::Error(ref err) => format!("{},{}", time.rfc3339(), &err),
-            Temperature::Invalid => format!("{},invalid", time.rfc3339()),
-        }
-    }
-
-    fn as_csv_internal(data: &SensorStoreType) -> String {
-        data.iter()
-            .map(SensorStore::as_csv_line)
-            .collect::<Vec<String>>()
-            .join("\n")
-    }
-
     fn as_csv(&self) -> String {
-        let data = self.data.read().unwrap();
-        SensorStore::as_csv_internal(&data)
+        self.data
+            .read()
+            .unwrap()
+            .iter()
+            .map(Measurement::as_csv_line)
+            .collect::<String>()
     }
 
     fn as_csv_from(&self, from: &time::Tm) -> String {
         let data = self.data.read().unwrap();
         data.iter()
             .rev()
-            .take_while(|&&(ref time, _)| time > from)
-            .map(SensorStore::as_csv_line)
+            .take_while(|&&Measurement { ref time, .. }| time > from)
+            .map(Measurement::as_csv_line)
             .collect::<Vec<String>>()
             .into_iter()
             .rev()
             .skip(1)
-            .collect::<Vec<String>>()
-            .join("\n")
-    }
-
-    fn remove(&mut self, t: &time::Tm) -> io::Result<()> {
-        //println!("remove {:?}", t);
-        let mut data = self.data.write().unwrap();
-        data.retain(|&(tm, _)| tm != *t);
-        let filename = SensorStore::get_filename(&self.sensorid);
-        fs::rename(&filename, format!("{}.bak", &filename)).unwrap();
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(&filename)
-            .unwrap();
-        file.write_all(
-            SensorStore::as_csv_internal(&data).as_bytes(),
-        )?;
-        file.write_all(b"\n")
+            .collect::<String>()
     }
 }
 
 struct Sensors {
     sensors: BTreeMap<String, SensorStore>,
 }
-
-type MSensors = Mutex<Sensors>;
 
 impl Sensors {
     fn all() -> Sensors {
@@ -314,7 +293,13 @@ impl Sensors {
                 .collect(),
         }
     }
+
+    fn get(&self, id: &str) -> Option<&SensorStore> {
+        self.sensors.get(id)
+    }
 }
+
+type State<'a> = rocket::State<'a, Mutex<Sensors>>;
 
 #[get("/")]
 fn index() -> io::Result<NamedFile> {
@@ -327,7 +312,7 @@ fn files(file: PathBuf) -> Option<NamedFile> {
 }
 
 #[get("/api/get/sensors")]
-fn sensor_list(sensors: State<MSensors>) -> String {
+fn sensor_list(sensors: State) -> String {
     sensors
         .lock()
         .unwrap()
@@ -338,45 +323,33 @@ fn sensor_list(sensors: State<MSensors>) -> String {
         .join("\n")
 }
 
-#[get("/api/get/<id>")]
-fn get_temp(id: String, sensors: State<MSensors>) -> Option<String> {
-    let sensors = sensors.lock().unwrap();
-    let sensors = &sensors.sensors;
+#[get("/api/get/name/<name>")]
+fn get_temp_by_name(name: String, state: State) -> Option<String> {
+    state.lock().unwrap().get(&name).map(SensorStore::as_csv)
+}
 
-    if let Some(sensor) = sensors.get(&id) {
-        Some(sensor.as_csv())
+#[get("/api/get/id/<id>")]
+fn get_temp_by_id(id: usize, state: State) -> Option<String> {
+    state.lock().unwrap().sensors.iter().nth(id).map(|(_, store)| store.as_csv())
+}
+
+#[get("/api/get/name/<name>/<from>")]
+fn get_temp_from_by_name(name: String, from: String, sensors: State) -> Option<String> {
+    if let Ok(t) = time::strptime(&from, "%Y-%m-%dT%H:%M:%SZ") {
+        sensors.lock().unwrap().sensors.get(&name).map(|sensor| {
+            sensor.as_csv_from(&t)
+        })
     } else {
         None
     }
 }
 
-#[get("/api/get/<id>/<from>")]
-fn get_temp_from(id: String, from: String, sensors: State<MSensors>) -> Option<String> {
-    let sensors = sensors.lock().unwrap();
-    if let Some(sensor) = sensors.sensors.get(&id) {
-        if let Ok(t) = time::strptime(&from, "%Y-%m-%dT%H:%M:%SZ") {
-            Some(sensor.as_csv_from(&t))
-        } else {
-            None
-        }
-    } else {
-        None
-    }
-}
-
-#[get("/api/remove/<id>/<time>")]
-fn remove_temp(id: String, time: String, sensors: State<MSensors>) -> Option<String> {
-    let mut sensors = sensors.lock().unwrap();
-    if let Some(sensor) = sensors.sensors.get_mut(&id) {
-        if let Ok(t) = time::strptime(&time, "%Y-%m-%dT%H:%M:%SZ") {
-            if let Ok(_) = sensor.remove(&t) {
-                Some(sensor.as_csv())
-            } else {
-                None
-            }
-        } else {
-            None
-        }
+#[get("/api/get/id/<id>/<from>")]
+fn get_temp_from_by_id(id: usize, from: String, sensors: State) -> Option<String> {
+    if let Ok(t) = time::strptime(&from, "%Y-%m-%dT%H:%M:%SZ") {
+        sensors.lock().unwrap().sensors.iter().nth(id).map(|(_, store)| {
+            store.as_csv_from(&t)
+        })
     } else {
         None
     }
@@ -386,8 +359,8 @@ fn remove_temp(id: String, time: String, sensors: State<MSensors>) -> Option<Str
 fn main() {
     println!("Start temprec");
 
-    let result = dht22_pi::read(17);
-    println!("initial read={:?}", result);
+    //let result = dht22_pi::read(17);
+    //println!("initial read={:?}", result);
 
     let sensors = Sensors::all();
     for id in sensors.sensors.keys() {
@@ -401,9 +374,10 @@ fn main() {
             routes![
                 index,
                 sensor_list,
-                get_temp,
-                get_temp_from,
-                remove_temp,
+                get_temp_by_name,
+                get_temp_by_id,
+                get_temp_from_by_name,
+                get_temp_from_by_id,
                 files,
             ],
         )
