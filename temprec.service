@@ -5,7 +5,7 @@ Description=temprec
 
 [Service]
 WorkingDirectory=/home/pi/temprec/
-ExecStart=/home/pi/.cargo/bin/cargo run --release
+ExecStart=/home/pi/temprec/start.sh
 Restart=always
 RestartSec=10
 
