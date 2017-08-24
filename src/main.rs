@@ -32,12 +32,10 @@ enum Temperature {
 impl Temperature {
     fn has_changed(&self, other: &Temperature) -> bool {
         match *self {
-            Temperature::MiliCelcius(temp1) => {
-                match *other {
-                    Temperature::MiliCelcius(temp2) => (temp1 - temp2).abs() > 200,
-                    _ => self != other,
-                }
-            }
+            Temperature::MiliCelcius(temp1) => match *other {
+                Temperature::MiliCelcius(temp2) => (temp1 - temp2).abs() > 200,
+                _ => self != other,
+            },
             _ => self != other,
         }
     }
@@ -82,24 +80,20 @@ impl Sensor {
                 if let Some(temp_string) = cap.get(2) {
                     let temp_string = temp_string.as_str();
                     match temp_string.parse::<i32>() {
-                        Ok(temp) => {
-                            if temp >= -55_000 && temp <= 125_000 {
-                                Temperature::MiliCelcius(temp)
-                            } else {
-                                Temperature::Error(format!(
-                                    "Measured temperature {} is outside of sensor range",
-                                    temp
-                                ))
-                            }
-                        }
-                        Err(ref err) => {
+                        Ok(temp) => if temp >= -55_000 && temp <= 125_000 {
+                            Temperature::MiliCelcius(temp)
+                        } else {
                             Temperature::Error(format!(
-                                "Couldn't parse number string=\"{}\" \
-                                                        err=\"{}\"",
-                                &temp_string,
-                                &err
+                                "Measured temperature {} is outside of sensor range",
+                                temp
                             ))
-                        }
+                        },
+                        Err(ref err) => Temperature::Error(format!(
+                            "Couldn't parse number string=\"{}\" \
+                             err=\"{}\"",
+                            &temp_string,
+                            &err
+                        )),
                     }
                 } else {
                     Temperature::Error(format!(
@@ -247,7 +241,10 @@ impl SensorStore {
                         }
                     })
                     .filter(|x| match *x {
-                        Measurement { temp: Temperature::Invalid, .. } => false,
+                        Measurement {
+                            temp: Temperature::Invalid,
+                            ..
+                        } => false,
                         _ => true,
                     })
                     .collect(),
@@ -330,15 +327,24 @@ fn get_temp_by_name(name: String, state: State) -> Option<String> {
 
 #[get("/api/get/id/<id>")]
 fn get_temp_by_id(id: usize, state: State) -> Option<String> {
-    state.lock().unwrap().sensors.iter().nth(id).map(|(_, store)| store.as_csv())
+    state
+        .lock()
+        .unwrap()
+        .sensors
+        .iter()
+        .nth(id)
+        .map(|(_, store)| store.as_csv())
 }
 
 #[get("/api/get/name/<name>/<from>")]
 fn get_temp_from_by_name(name: String, from: String, sensors: State) -> Option<String> {
     if let Ok(t) = time::strptime(&from, "%Y-%m-%dT%H:%M:%SZ") {
-        sensors.lock().unwrap().sensors.get(&name).map(|sensor| {
-            sensor.as_csv_from(&t)
-        })
+        sensors
+            .lock()
+            .unwrap()
+            .sensors
+            .get(&name)
+            .map(|sensor| sensor.as_csv_from(&t))
     } else {
         None
     }
@@ -347,9 +353,13 @@ fn get_temp_from_by_name(name: String, from: String, sensors: State) -> Option<S
 #[get("/api/get/id/<id>/<from>")]
 fn get_temp_from_by_id(id: usize, from: String, sensors: State) -> Option<String> {
     if let Ok(t) = time::strptime(&from, "%Y-%m-%dT%H:%M:%SZ") {
-        sensors.lock().unwrap().sensors.iter().nth(id).map(|(_, store)| {
-            store.as_csv_from(&t)
-        })
+        sensors
+            .lock()
+            .unwrap()
+            .sensors
+            .iter()
+            .nth(id)
+            .map(|(_, store)| store.as_csv_from(&t))
     } else {
         None
     }
