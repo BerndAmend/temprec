@@ -1,3 +1,4 @@
+#![deny(bare_trait_objects)]
 #![feature(plugin)]
 #![plugin(rocket_codegen)]
 
