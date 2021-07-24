@@ -1,11 +1,13 @@
 [package]
 name = "temprec"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Bernd Amend <bernd.amend@gmail.com>"]
+edition = '2018'
 
 [dependencies]
 regex = "*"
-time = "*"
+chrono = "*"
 rocket = "*"
 rocket_codegen = "*"
 dht22_pi = "*"
+rusqlite = { version = "*", features = ["chrono"]}

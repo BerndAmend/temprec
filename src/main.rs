@@ -1,27 +1,20 @@
-#![deny(bare_trait_objects)]
-#![feature(plugin)]
-#![plugin(rocket_codegen)]
-
-extern crate regex;
-extern crate time;
-extern crate rocket;
-extern crate dht22_pi;
-
 use std::io;
 use std::path::{Path, PathBuf};
 
 use rocket::response::NamedFile;
 
-use std::collections::BTreeMap;
-use std::io::BufReader;
-use std::io::prelude::*;
-use std::fs::{File, OpenOptions};
 use regex::Regex;
+use std::collections::BTreeMap;
+use std::fs::{File, OpenOptions};
+use std::io::prelude::*;
+use std::io::BufReader;
 
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 
 use std::env;
+
+use chrono::prelude::*;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 enum Temperature {
@@ -81,19 +74,20 @@ impl Sensor {
                 if let Some(temp_string) = cap.get(2) {
                     let temp_string = temp_string.as_str();
                     match temp_string.parse::<i32>() {
-                        Ok(temp) => if temp >= -55_000 && temp <= 125_000 {
-                            Temperature::MiliCelcius(temp)
-                        } else {
-                            Temperature::Error(format!(
-                                "Measured temperature {} is outside of sensor range",
-                                temp
-                            ))
-                        },
+                        Ok(temp) => {
+                            if temp >= -55_000 && temp <= 125_000 {
+                                Temperature::MiliCelcius(temp)
+                            } else {
+                                Temperature::Error(format!(
+                                    "Measured temperature {} is outside of sensor range",
+                                    temp
+                                ))
+                            }
+                        }
                         Err(ref err) => Temperature::Error(format!(
                             "Couldn't parse number string=\"{}\" \
                              err=\"{}\"",
-                            &temp_string,
-                            &err
+                            &temp_string, &err
                         )),
                     }
                 } else {
@@ -130,7 +124,8 @@ impl Sensor {
         let paths = std::fs::read_dir(Self::get_sensor_base_path()).unwrap();
 
         for path in paths {
-            let path = path.unwrap()
+            let path = path
+                .unwrap()
                 .path()
                 .file_name()
                 .unwrap()
@@ -146,12 +141,12 @@ impl Sensor {
 }
 
 struct Measurement {
-    time: time::Tm,
+    time: chrono::DateTime<Utc>,
     temp: Temperature,
 }
 
 impl Measurement {
-    fn new(time: time::Tm, temp: Temperature) -> Measurement {
+    fn new(time: chrono::DateTime<Utc>, temp: Temperature) -> Measurement {
         Measurement {
             time: time,
             temp: temp,
@@ -193,7 +188,7 @@ impl SensorStore {
                 loop {
                     let current_temp = sensor.read_temp();
                     if current_temp.has_changed(&last_temp) {
-                        let d = Measurement::new(time::now_utc(), current_temp.clone());
+                        let d = Measurement::new(Utc::now(), current_temp.clone());
                         if let Err(err) = SensorStore::append_to_file(&filename, &d) {
                             println!("Couldn't write sensor measurement err=\"{}\"", err);
                         }
@@ -229,8 +224,10 @@ impl SensorStore {
                         let splitted: Vec<&str> = s.split(',').collect();
                         if splitted.len() != 2 {
                             println!("skip invalid line \"{}\"", s);
-                            Measurement::new(time::now_utc(), Temperature::Invalid)
-                        } else if let Ok(time) = time::strptime(splitted[0], "%Y-%m-%dT%H:%M:%SZ") {
+                            Measurement::new(Utc::now(), Temperature::Invalid)
+                        } else if let Ok(time) =
+                            chrono::DateTime::parse_from_str(splitted[0], "%Y-%m-%dT%H:%M:%SZ")
+                        {
                             let temp = match splitted[1].parse::<i32>() {
                                 Ok(temp) => Temperature::MiliCelcius(temp),
                                 Err(_) => Temperature::Error(splitted[1].to_owned()),
@@ -238,7 +235,7 @@ impl SensorStore {
                             Measurement::new(time, temp)
                         } else {
                             println!("skip line with invalid time line=\"{}\"", s);
-                            Measurement::new(time::now_utc(), Temperature::Invalid)
+                            Measurement::new(Utc::now(), Temperature::Invalid)
                         }
                     })
                     .filter(|x| match *x {
@@ -264,7 +261,7 @@ impl SensorStore {
             .collect::<String>()
     }
 
-    fn as_csv_from(&self, from: &time::Tm) -> String {
+    fn as_csv_from(&self, from: &chrono::DateTime<Utc>) -> String {
         let data = self.data.read().unwrap();
         data.iter()
             .rev()
